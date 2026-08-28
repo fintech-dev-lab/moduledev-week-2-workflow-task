@@ -1,0 +1,123 @@
+{
+  "action": "action_5cd90325f0",
+  "actionVersion": 1,
+  "businessKeys": {
+    "error": "business_4ac85e225b31",
+    "invalid": "business_a99551e1d503",
+    "manual": "business_7630f03a6860",
+    "retry": "business_3d8bf247b810",
+    "signal": "business_e4aa5ad6240f",
+    "unknown": "business_c20eae98df2a",
+    "v2": "business_c2ee2c294d7a"
+  },
+  "businessValues": {
+    "changed": "subject_a66747ac6b1b",
+    "error": "subject_dc7590d3e36f",
+    "invalid": "subject_39b9d6d61420",
+    "manual": "subject_b60848a63a3d",
+    "marker": "marker_ad370346f0d7",
+    "result": "result_8d3e626202dc",
+    "retry": "subject_6c13d0ef5bb8",
+    "signal": "subject_815550d0db22",
+    "signalPayload": "payload_f61e394eed12",
+    "unknown": "subject_b07b5a2fe879"
+  },
+  "contractVersion": "course-1",
+  "digest": "fdae621f8c88b02e4ee50ba3cec2658470a177da68e5b438349a380d100071d4",
+  "effectTable": "effect_929740a8c2",
+  "errorCodes": {
+    "error": "fixture.error_09b64e2f",
+    "retry": "fixture.retry_a7dfc8eb"
+  },
+  "files": {
+    "actionManifest": "manifests/3c363d117b40.action.json",
+    "disabledActionManifest": "manifests/3c363d117b40-disabled.action.json",
+    "flowV1Json": "maps/3c363d117b40-v1.flow.json",
+    "flowV1Yaml": "maps/3c363d117b40-v1.flow.yaml",
+    "flowV2Json": "maps/3c363d117b40-v2.flow.json",
+    "flowV2Yaml": "maps/3c363d117b40-v2.flow.yaml",
+    "invalidMaps": {
+      "schema": [
+        "maps/invalid/schema/invalid-step-type.flow.json",
+        "maps/invalid/schema/missing-start-step.flow.json",
+        "maps/invalid/schema/unknown-field.flow.json",
+        "maps/invalid/schema/unknown-service.flow.json"
+      ],
+      "semantic": [
+        "maps/invalid/semantic/cycle.flow.json",
+        "maps/invalid/semantic/dead-end.flow.json",
+        "maps/invalid/semantic/disabled-action-version.flow.json",
+        "maps/invalid/semantic/duplicate-outcome.flow.json",
+        "maps/invalid/semantic/duplicate-step-key.flow.json",
+        "maps/invalid/semantic/incomplete-outcomes.flow.json",
+        "maps/invalid/semantic/invalid-retry.flow.json",
+        "maps/invalid/semantic/missing-end.flow.json",
+        "maps/invalid/semantic/overlapping-mapping.flow.json",
+        "maps/invalid/semantic/policy-mismatch.flow.json",
+        "maps/invalid/semantic/transition-from-end.flow.json",
+        "maps/invalid/semantic/unknown-action.flow.json",
+        "maps/invalid/semantic/unknown-action-version.flow.json",
+        "maps/invalid/semantic/unknown-start-step.flow.json",
+        "maps/invalid/semantic/unreachable-step.flow.json"
+      ]
+    },
+    "migration": "migrations/900_3c363d117b40_workflow_probe.sql",
+    "processData": {
+      "changed": "data/process-changed.json",
+      "error": "data/process-error.json",
+      "invalid": "data/process-invalid.json",
+      "manual": "data/process-manual.json",
+      "retry": "data/process-retry.json",
+      "signal": "data/process-signal.json",
+      "unknown": "data/process-unknown.json"
+    },
+    "resultData": "data/finish-result.json",
+    "signalData": "data/signal.json"
+  },
+  "flowName": "flow-4a31f70549",
+  "generationPhase": "post-build",
+  "generatorVersion": "week-2.1",
+  "modes": {
+    "error": "error_210e938",
+    "invalid": "invalid_1c3f7e6",
+    "manual": "manual_f43d11c",
+    "retry": "retry_bab420a",
+    "signal": "signal_aecd1de",
+    "unknown": "unknown_8b825c1"
+  },
+  "module": "module_5abe942c84",
+  "orderingOwner": "runner",
+  "outcomes": {
+    "abandoned": "ABANDONED_7C543531",
+    "approved": "APPROVED_C84C31AD",
+    "completed": "COMPLETED_D136EF04",
+    "manual": "ROUTE_MANUAL_503E0EA7",
+    "received": "RECEIVED_CAA629D5",
+    "signal": "ROUTE_SIGNAL_72125C4E",
+    "unknown": "UNDECLARED_7CD21CE6"
+  },
+  "processProperties": {
+    "mode": "behavior_644ac23d",
+    "value": "subject_4d620118"
+  },
+  "properties": {
+    "echo": "echo_c7db0f6e",
+    "execution": "execution_b11f28c9",
+    "marker": "marker_0b52d25a",
+    "mode": "mode_d566e409",
+    "revision": "revision_5525dad9",
+    "stored": "stored_8a9210a8",
+    "value": "value_c6e4ac8e"
+  },
+  "seedMode": "explicit-test-seed",
+  "signalMessageId": "message_f7ac4beafa3c0064",
+  "signalType": "signal_f21581.received_f1fa89",
+  "steps": {
+    "automatic": "invoke-ea531c02",
+    "end": "done-ea3a1a88",
+    "manual": "review-41b6813c",
+    "wait": "wait-f40bb1f9"
+  },
+  "targetFunction": "execute_fda552339a",
+  "targetSchema": "probe_b55d733620"
+}

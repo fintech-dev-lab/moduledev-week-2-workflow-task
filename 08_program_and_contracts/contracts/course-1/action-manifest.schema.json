@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:course:course-1:action-manifest",
+  "title": "Course action manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "module",
+    "action",
+    "version",
+    "http_method",
+    "target_schema",
+    "target_function",
+    "request_schema",
+    "response_schema",
+    "outcomes",
+    "required_policy",
+    "idempotency_mode",
+    "idempotency_scope",
+    "timeout_ms",
+    "enabled",
+    "is_default"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "course-1"
+    },
+    "module": {
+      "$ref": "#/$defs/sqlIdentifier"
+    },
+    "action": {
+      "$ref": "#/$defs/sqlIdentifier"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "http_method": {
+      "const": "POST"
+    },
+    "target_schema": {
+      "$ref": "#/$defs/sqlIdentifier"
+    },
+    "target_function": {
+      "$ref": "#/$defs/sqlIdentifier"
+    },
+    "request_schema": {
+      "$ref": "#/$defs/schemaDocument"
+    },
+    "response_schema": {
+      "$ref": "#/$defs/schemaDocument"
+    },
+    "outcomes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/outcome"
+      }
+    },
+    "required_policy": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$"
+      }
+    },
+    "idempotency_mode": {
+      "enum": ["none", "optional", "required"]
+    },
+    "idempotency_scope": {
+      "enum": ["none", "principal_action", "consumer_action", "global_action"]
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 30000
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "is_default": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "idempotency_mode": {
+            "const": "none"
+          }
+        },
+        "required": ["idempotency_mode"]
+      },
+      "then": {
+        "properties": {
+          "idempotency_scope": {
+            "const": "none"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "idempotency_scope": {
+            "enum": ["principal_action", "consumer_action", "global_action"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "is_default": {
+            "const": true
+          }
+        },
+        "required": ["is_default"]
+      },
+      "then": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sqlIdentifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,62}$"
+    },
+    "outcome": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{0,62}$"
+    },
+    "schemaDocument": {
+      "type": "object",
+      "required": ["$schema"],
+      "properties": {
+        "$schema": {
+          "const": "https://json-schema.org/draft/2020-12/schema"
+        }
+      }
+    }
+  }
+}

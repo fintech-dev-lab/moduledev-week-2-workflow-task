@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deterministic public workflow step identifiers"
+regexTarget = "secret"
+regexes = ['''^(?:invoke-ea531c02|orphan-54a46a8d82)$''']

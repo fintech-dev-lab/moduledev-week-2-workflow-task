@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:course:course-1:workflow-map",
+  "title": "Course workflow map",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "flow_name",
+    "version",
+    "start_step",
+    "steps",
+    "transitions"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "course-1"
+    },
+    "flow_name": {
+      "$ref": "#/$defs/key"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "start_step": {
+      "$ref": "#/$defs/key"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/automaticStep"},
+          {"$ref": "#/$defs/waitSignalStep"},
+          {"$ref": "#/$defs/manualStep"},
+          {"$ref": "#/$defs/endStep"}
+        ]
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/transition"
+      }
+    }
+  },
+  "$comment": "The publisher additionally validates unique step keys, one existing start step, reachability, acyclicity, target references, exact outcome coverage, action policy equality, RFC 6901 mapping semantics and non-overlap, and delays_ms length equal to max_attempts minus one.",
+  "$defs": {
+    "key": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,62}$"
+    },
+    "sqlIdentifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,62}$"
+    },
+    "outcome": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{0,62}$"
+    },
+    "signalType": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)*$"
+    },
+    "policy": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$"
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts", "delays_ms"],
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "delays_ms": {
+          "type": "array",
+          "maxItems": 9,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 30000
+          }
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service",
+        "module",
+        "action",
+        "action_version",
+        "required_policy",
+        "timeout_ms",
+        "retry",
+        "input_mapping",
+        "input_constants"
+      ],
+      "properties": {
+        "service": {
+          "const": "postgres"
+        },
+        "module": {
+          "$ref": "#/$defs/sqlIdentifier"
+        },
+        "action": {
+          "$ref": "#/$defs/sqlIdentifier"
+        },
+        "action_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "required_policy": {
+          "$ref": "#/$defs/policy"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30000
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "input_mapping": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^/"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "input_constants": {
+          "type": "object"
+        }
+      }
+    },
+    "automaticStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "type", "task"],
+      "properties": {
+        "key": {"$ref": "#/$defs/key"},
+        "type": {"const": "automatic"},
+        "task": {"$ref": "#/$defs/task"}
+      }
+    },
+    "waitSignalStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "type", "signal_type", "outcome"],
+      "properties": {
+        "key": {"$ref": "#/$defs/key"},
+        "type": {"const": "wait_signal"},
+        "signal_type": {"$ref": "#/$defs/signalType"},
+        "outcome": {"$ref": "#/$defs/outcome"}
+      }
+    },
+    "manualStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "type", "allowed_outcomes"],
+      "properties": {
+        "key": {"$ref": "#/$defs/key"},
+        "type": {"const": "manual"},
+        "allowed_outcomes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/outcome"}
+        }
+      }
+    },
+    "endStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "type", "outcome"],
+      "properties": {
+        "key": {"$ref": "#/$defs/key"},
+        "type": {"const": "end"},
+        "outcome": {"$ref": "#/$defs/outcome"}
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "outcome", "to"],
+      "properties": {
+        "from": {"$ref": "#/$defs/key"},
+        "outcome": {"$ref": "#/$defs/outcome"},
+        "to": {"$ref": "#/$defs/key"}
+      }
+    }
+  }
+}

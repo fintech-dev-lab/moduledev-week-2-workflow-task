@@ -1,0 +1,38 @@
+{
+  "contract_version": "course-1",
+  "module": "training",
+  "action": "canary",
+  "version": 1,
+  "http_method": "POST",
+  "target_schema": "training",
+  "target_function": "canary_v1",
+  "request_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["value"],
+    "properties": {
+      "value": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
+  },
+  "response_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["stored"],
+    "properties": {
+      "stored": {
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "outcomes": ["APPLIED"],
+  "required_policy": ["workflow:execute"],
+  "idempotency_mode": "required",
+  "idempotency_scope": "principal_action",
+  "timeout_ms": 2000,
+  "enabled": true,
+  "is_default": true
+}

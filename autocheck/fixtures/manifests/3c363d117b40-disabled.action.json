@@ -1,0 +1,78 @@
+{
+  "action": "action_5cd90325f0",
+  "contract_version": "course-1",
+  "enabled": false,
+  "http_method": "POST",
+  "idempotency_mode": "required",
+  "idempotency_scope": "principal_action",
+  "is_default": false,
+  "module": "module_5abe942c84",
+  "outcomes": [
+    "ROUTE_SIGNAL_72125C4E",
+    "ROUTE_MANUAL_503E0EA7"
+  ],
+  "request_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "marker_0b52d25a": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "mode_d566e409": {
+        "enum": [
+          "signal_aecd1de",
+          "manual_f43d11c",
+          "retry_bab420a",
+          "error_210e938",
+          "unknown_8b825c1",
+          "invalid_1c3f7e6"
+        ]
+      },
+      "value_c6e4ac8e": {
+        "maxLength": 128,
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "mode_d566e409",
+      "value_c6e4ac8e",
+      "marker_0b52d25a"
+    ],
+    "type": "object"
+  },
+  "required_policy": [
+    "workflow:execute"
+  ],
+  "response_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "properties": {
+      "echo_c7db0f6e": {
+        "type": "string"
+      },
+      "execution_b11f28c9": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "revision_5525dad9": {
+        "const": 2
+      },
+      "stored_8a9210a8": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "stored_8a9210a8",
+      "revision_5525dad9",
+      "echo_c7db0f6e",
+      "execution_b11f28c9"
+    ],
+    "type": "object"
+  },
+  "target_function": "execute_fda552339a",
+  "target_schema": "probe_b55d733620",
+  "timeout_ms": 1800,
+  "version": 2
+}

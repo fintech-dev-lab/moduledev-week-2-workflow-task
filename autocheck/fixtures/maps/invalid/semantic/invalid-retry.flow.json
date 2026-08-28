@@ -1,0 +1,75 @@
+{
+  "contract_version": "course-1",
+  "flow_name": "flow-4a31f70549",
+  "start_step": "invoke-ea531c02",
+  "steps": [
+    {
+      "key": "invoke-ea531c02",
+      "task": {
+        "action": "action_5cd90325f0",
+        "action_version": 1,
+        "input_constants": {
+          "marker_0b52d25a": "marker_ad370346f0d7"
+        },
+        "input_mapping": {
+          "/mode_d566e409": "/behavior_644ac23d",
+          "/value_c6e4ac8e": "/subject_4d620118"
+        },
+        "module": "module_5abe942c84",
+        "required_policy": [
+          "workflow:execute"
+        ],
+        "retry": {
+          "delays_ms": [
+            1000
+          ],
+          "max_attempts": 3
+        },
+        "service": "postgres",
+        "timeout_ms": 1600
+      },
+      "type": "automatic"
+    },
+    {
+      "key": "wait-f40bb1f9",
+      "outcome": "RECEIVED_CAA629D5",
+      "signal_type": "signal_f21581.received_f1fa89",
+      "type": "wait_signal"
+    },
+    {
+      "allowed_outcomes": [
+        "APPROVED_C84C31AD"
+      ],
+      "key": "review-41b6813c",
+      "type": "manual"
+    },
+    {
+      "key": "done-ea3a1a88",
+      "outcome": "COMPLETED_D136EF04",
+      "type": "end"
+    }
+  ],
+  "transitions": [
+    {
+      "from": "invoke-ea531c02",
+      "outcome": "ROUTE_SIGNAL_72125C4E",
+      "to": "wait-f40bb1f9"
+    },
+    {
+      "from": "invoke-ea531c02",
+      "outcome": "ROUTE_MANUAL_503E0EA7",
+      "to": "review-41b6813c"
+    },
+    {
+      "from": "wait-f40bb1f9",
+      "outcome": "RECEIVED_CAA629D5",
+      "to": "done-ea3a1a88"
+    },
+    {
+      "from": "review-41b6813c",
+      "outcome": "APPROVED_C84C31AD",
+      "to": "done-ea3a1a88"
+    }
+  ],
+  "version": 1
+}

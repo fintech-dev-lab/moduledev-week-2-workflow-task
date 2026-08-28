@@ -1,0 +1,51 @@
+{
+  "contract_version": "course-1",
+  "flow_name": "workflow-smoke",
+  "version": 1,
+  "start_step": "invoke_canary",
+  "steps": [
+    {
+      "key": "invoke_canary",
+      "type": "automatic",
+      "task": {
+        "service": "postgres",
+        "module": "training",
+        "action": "canary",
+        "action_version": 1,
+        "required_policy": ["workflow:execute"],
+        "timeout_ms": 2000,
+        "retry": {
+          "max_attempts": 3,
+          "delays_ms": [200, 400]
+        },
+        "input_mapping": {
+          "/value": "/value"
+        },
+        "input_constants": {}
+      }
+    },
+    {
+      "key": "wait_result",
+      "type": "wait_signal",
+      "signal_type": "training.completed",
+      "outcome": "RECEIVED"
+    },
+    {
+      "key": "done",
+      "type": "end",
+      "outcome": "COMPLETED"
+    }
+  ],
+  "transitions": [
+    {
+      "from": "invoke_canary",
+      "outcome": "APPLIED",
+      "to": "wait_result"
+    },
+    {
+      "from": "wait_result",
+      "outcome": "RECEIVED",
+      "to": "done"
+    }
+  ]
+}
