@@ -62,10 +62,11 @@ Published definition неизменяема. Process навсегда храни
 - pointers соответствуют RFC 6901;
 - missing source → non-retryable `workflow.mapping_missing`, action не вызывается;
 - сформированный payload проходит request schema;
-- `max_attempts` включает первую attempt;
+- `max_attempts` включает первое исполнение action;
 - `delays_ms` содержит `max_attempts - 1` значений;
 - retry выполняется для `retryable=true` и timeout;
-- mapping/contract errors не повторяются.
+- mapping/contract errors не повторяются;
+- истёкшая lease оставляет `STALE` attempt и увеличивает `attempt_count`, но не расходует failure budget.
 
 ## Идентификаторы исполнения
 
@@ -78,6 +79,8 @@ Published definition неизменяема. Process навсегда храни
 
 Retry меняет `attemptId`, но не `jobId` и не `executionId`.
 
+Роль `workflow_worker` выполняет только `workflow.claim_jobs`, `api.invoke`, `workflow.finish_job`, `workflow.fail_job`. Прямой DML и отдельное чтение action-каталога этой роли не нужны.
+
 ## Lease и fencing
 
 ```text
@@ -88,6 +91,8 @@ claim job
 ```
 
 Stale worker не может завершить job после reclaim.
+
+`message-id` сигнала глобально уникален. Ранний сигнал объявленного pinned map типа сохраняется как `ACCEPTED` и применяется при входе в соответствующий `wait_signal`.
 
 Crash tests используют `COURSE_FAILPOINT=after_job_claim` и `after_action_before_finish`. Checker сначала ждёт structured `failpoint.reached`, затем останавливает worker. Случайный `sleep` не является доказательством crash boundary.
 

@@ -27,7 +27,7 @@ from typing import Any, Callable, Sequence
 
 
 MANIFEST_VERSION = "week-2-public-report/v1"
-TOOL_VERSION = "week-2-public-check/1.0"
+TOOL_VERSION = "week-2-public-check/1.1"
 PUBLISHED_FIXTURE_DIGEST = (
     "fdae621f8c88b02e4ee50ba3cec2658470a177da68e5b438349a380d100071d4"
 )
@@ -242,30 +242,9 @@ SOLUTION_HEADINGS = {
     "диагностика",
     "ограничения",
 }
-SOLUTION_LITERALS = (
+README_LITERALS = (
     "docker compose up -d --build",
     "./check.sh",
-    "http://localhost:8080",
-    "/health/live",
-    "/health/ready",
-    "/openapi/default.json",
-    "COURSE_JWT_ISSUER",
-    "COURSE_TEST_PROFILE",
-    "COURSE_FAILPOINT",
-    "flow validate",
-    "flow publish",
-    "flow activate",
-    "flow start",
-    "flow get",
-    "flow signal",
-    "gateway",
-    "api",
-    "cli",
-    "postgres",
-    "worker-a",
-    "worker-b",
-    "C4",
-    "ADR",
 )
 PHASE_CHECKS = {
     "publication": (
@@ -307,6 +286,7 @@ _WRITE_WORD = re.compile(
     r"copy|call|do|vacuum|refresh|reindex|cluster)\b",
     re.IGNORECASE,
 )
+_SQL_STRING_LITERAL = re.compile(r"'(?:''|[^'])*'")
 
 
 class FixtureError(ValueError):
@@ -555,7 +535,10 @@ def validate_read_only_query(
         raise ValueError("Query must be one comment-free statement")
     if re.match(r"^\s*(?:select|with)\b", query, re.IGNORECASE) is None:
         raise ValueError("Query must start with SELECT or WITH")
-    if _WRITE_WORD.search(query):
+    scrubbed = _SQL_STRING_LITERAL.sub("", query)
+    if "'" in scrubbed:
+        raise ValueError("Query contains an unterminated string literal")
+    if _WRITE_WORD.search(scrubbed):
         raise ValueError("Query must be read-only")
     references = {
         (schema.casefold(), relation.casefold())
@@ -603,7 +586,7 @@ def strictly_increasing_integer(current: Any, previous: Any) -> bool:
 
 
 def stable_view_schemas_match(rows: Sequence[dict[str, Any]]) -> bool:
-    actual: dict[str, list[tuple[str, str]]] = {}
+    actual: dict[str, dict[str, str]] = {}
     for row in rows:
         view = row.get("view_name")
         column = row.get("column_name")
@@ -615,10 +598,15 @@ def stable_view_schemas_match(rows: Sequence[dict[str, Any]]) -> bool:
             or not isinstance(data_type, str)
         ):
             return False
-        actual.setdefault(str(view), []).append((column, data_type))
-    return {
-        view: tuple(columns) for view, columns in actual.items()
-    } == AUTOCHECK_VIEW_SCHEMAS
+        columns = actual.setdefault(str(view), {})
+        if column in columns:
+            return False
+        columns[column] = data_type
+    return all(
+        view in actual
+        and all(actual[view].get(column) == data_type for column, data_type in columns)
+        for view, columns in AUTOCHECK_VIEW_SCHEMAS.items()
+    )
 
 
 def action_dispatch_matches(
@@ -1030,8 +1018,11 @@ def _unsafe_compose_findings(config: dict[str, Any], repo: Path) -> list[str]:
             if section in {"configs", "secrets"} and driver:
                 findings.append(f"{section}.{name}: unsafe resource driver")
             source = resource.get("file")
-            if source and not _inside(_candidate_path(str(source), repo), repo):
-                findings.append(f"{section}.{name}: external file")
+            if source:
+                if not _inside(_candidate_path(str(source), repo), repo):
+                    findings.append(f"{section}.{name}: external file")
+                elif section in {"configs", "secrets"}:
+                    findings.append(f"{section}.{name}: repository file mount")
     return sorted(set(findings))
 
 
@@ -1452,17 +1443,46 @@ class ComposeHarness:
                 break
         return addresses
 
+    def _service_addresses(self, service: str) -> tuple[bool, set[str]]:
+        containers = self.compose(["ps", "-q", service], timeout=10)
+        if not containers.ok:
+            if self._environment_error(containers):
+                raise EnvironmentFailure(
+                    "Docker transport failed during the worker address probe"
+                )
+            return False, set()
+        container_ids = [
+            item.strip() for item in containers.stdout.splitlines() if item.strip()
+        ]
+        if (
+            len(container_ids) != 1
+            or re.fullmatch(r"[a-f0-9]{12,64}", container_ids[0]) is None
+        ):
+            return False, set()
+        inspected = self.run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{println .GlobalIPv6Address}}{{end}}",
+                container_ids[0],
+            ],
+            timeout=10,
+        )
+        if not inspected.ok and self._environment_error(inspected):
+            raise EnvironmentFailure(
+                "Docker transport failed during the worker address probe"
+            )
+        addresses = self._container_addresses(inspected)
+        return inspected.ok and bool(addresses), addresses
+
     def worker_database_security(self) -> dict[str, Any]:
         service_addresses: dict[str, set[str]] = {}
         address_probes: dict[str, bool] = {}
         for service in ("worker-a", "worker-b"):
-            result = self.compose(["exec", "-T", service, "hostname", "-i"], timeout=10)
-            if self._environment_error(result):
-                raise EnvironmentFailure(
-                    "Docker transport failed during the worker role probe"
-                )
-            address_probes[service] = result.ok
-            service_addresses[service] = self._container_addresses(result)
+            address_probes[service], service_addresses[service] = (
+                self._service_addresses(service)
+            )
 
         addresses = sorted(
             {address for values in service_addresses.values() for address in values}
@@ -1700,13 +1720,16 @@ class ComposeHarness:
         services: Sequence[str],
         name: str,
         *,
-        timeout: float = 1.5,
+        timeout: float = 8,
         interval: float = 0.05,
+        stability: float = 0.2,
     ) -> tuple[str, str, dict[str, str]]:
         if len(services) != 2 or len(set(services)) != 2:
             raise ValueError("Exactly two workers are required")
         deadline = time.monotonic() + timeout
         successful_reads = 0
+        observed_winner: str | None = None
+        observed_at: float | None = None
         while True:
             remaining = max(0.1, deadline - time.monotonic())
             logs = self.compose(
@@ -1739,8 +1762,16 @@ class ComposeHarness:
                 )
             if len(acknowledgements) == 1:
                 winner, ack = next(iter(acknowledgements.items()))
-                loser = next(service for service in services if service != winner)
-                return winner, loser, ack
+                now = time.monotonic()
+                if observed_winner != winner:
+                    observed_winner = winner
+                    observed_at = now
+                elif observed_at is not None and now - observed_at >= stability:
+                    loser = next(service for service in services if service != winner)
+                    return winner, loser, ack
+            else:
+                observed_winner = None
+                observed_at = None
             now = time.monotonic()
             if now >= deadline:
                 if not successful_reads:
@@ -1950,26 +1981,19 @@ class PublicChecker:
             text = (self.repo / "README.md").read_text(encoding="utf-8")
         except OSError:
             return ["missing README.md"]
-        solution = re.search(r"(?mi)^##[ \t]+Решение[ \t]*$", text)
-        if solution:
-            tail = text[solution.end() :]
-            next_heading = re.search(r"(?m)^##[ \t]+\S.*$", tail)
-            section = tail[: next_heading.start()] if next_heading else tail
-            headings = {
-                item.strip().casefold()
-                for item in re.findall(r"(?mi)^###[ \t]+(.+?)[ \t]*$", section)
-            }
-            findings.extend(
-                f"missing README subsection {name}"
-                for name in sorted(SOLUTION_HEADINGS - headings)
-            )
-            findings.extend(
-                f"missing README value {value}"
-                for value in SOLUTION_LITERALS
-                if value not in section
-            )
-        else:
-            findings.append("missing README section Решение")
+        headings = {
+            item.strip().casefold()
+            for item in re.findall(r"(?mi)^#{2,4}[ \t]+(.+?)[ \t]*$", text)
+        }
+        findings.extend(
+            f"missing README section {name}"
+            for name in sorted(SOLUTION_HEADINGS - headings)
+        )
+        findings.extend(
+            f"missing README value {value}"
+            for value in README_LITERALS
+            if value not in text
+        )
         tracked = self._tracked_paths()
         if ".gitignore" not in tracked:
             findings.append("missing .gitignore")
@@ -2000,7 +2024,7 @@ class PublicChecker:
             "repository-contract",
             "admission",
             not text_findings,
-            "README solution sections and clean tracked artifacts",
+            "README sections, launch/check commands and clean tracked artifacts",
             text_findings,
         )
         raw_compose_findings = _raw_compose_findings(self.compose_file)
@@ -2615,6 +2639,7 @@ class PublicChecker:
         accepted = self.harness.cli(
             *signal_args, f"/autocheck/input/{self.files['signalData']}"
         )
+        completed = self._poll_process(process_id, {"COMPLETED"})
         signals_accepted = self._signals(process_id)
         events_accepted = self._events(process_id)
         duplicate = self.harness.cli(
@@ -2634,7 +2659,6 @@ class PublicChecker:
         )
         signals_conflict = self._signals(process_id)
         events_conflict = self._events(process_id)
-        completed = self._poll_process(process_id, {"COMPLETED"})
         steps = self._steps(process_id)
         accepted_status = (
             accepted[1].get("result", {}).get("status")
@@ -2689,11 +2713,80 @@ class PublicChecker:
             and "conflict" in str(self.harness.error_code(conflict[1]))
             and history_ok
         )
+
+        stopped = self.harness.compose(["stop", "worker-a", "worker-b"], timeout=30)
+        self.harness.require(stopped, "Cannot stop workers for the early-signal probe")
+        early_start, early_body, early_id = self._start(
+            "early-signal", "signal", remember=False
+        )
+        if early_id is None:
+            restored = self.harness.compose(
+                ["up", "-d", "--no-build", "worker-a", "worker-b"], timeout=40
+            )
+            self.harness.require(
+                restored, "Cannot restore workers after early-signal setup"
+            )
+            raise ContractError(
+                f"Early-signal process did not start: {self._command_view(early_start, early_body)}"
+            )
+        early_message_id = f"{self.fixture['signalMessageId']}-early"
+        early_args = (
+            "flow",
+            "signal",
+            early_id,
+            "--type",
+            str(self.fixture["signalType"]),
+            "--message-id",
+            early_message_id,
+            "--payload",
+        )
+        early_accepted = self.harness.cli(
+            *early_args, f"/autocheck/input/{self.files['signalData']}"
+        )
+        early_before_resume = self._signals(early_id)
+        restarted = self.harness.compose(
+            ["up", "-d", "--no-build", "worker-a", "worker-b"], timeout=40
+        )
+        self.harness.require(restarted, "Cannot restart workers for the early signal")
+        early_completed = self._poll_process(early_id, {"COMPLETED"}, timeout=8)
+        early_after_resume = self._signals(early_id)
+        global_conflict = self.harness.cli(
+            "flow",
+            "signal",
+            process_id,
+            "--type",
+            str(self.fixture["signalType"]),
+            "--message-id",
+            early_message_id,
+            "--payload",
+            f"/autocheck/input/{self.files['signalData']}",
+        )
+        early_after_conflict = self._signals(early_id)
+        original_after_conflict = self._signals(process_id)
+        early_status = (
+            early_accepted[1].get("result", {}).get("status")
+            if self.harness.ok_envelope(*early_accepted)
+            else None
+        )
+        early_ok = (
+            early_status == "accepted"
+            and len(early_before_resume) == 1
+            and early_before_resume[0].get("status") == "ACCEPTED"
+            and process_state_matches(
+                early_completed, "COMPLETED", str(self.fixture["steps"]["end"])
+            )
+            and len(early_after_resume) == 1
+            and early_after_resume[0].get("status") == "APPLIED"
+            and self.harness.error_envelope(*global_conflict)
+            and "conflict" in str(self.harness.error_code(global_conflict[1]))
+            and early_after_conflict == early_after_resume
+            and original_after_conflict == signals_conflict
+        )
         self.record(
             "signal-idempotency-and-history",
             "execution",
-            signal_ok,
-            "accepted, duplicate, conflict; only accepted delivery appends history",
+            signal_ok and early_ok,
+            "accepted, duplicate, global conflict and early delivery reconciliation",
             {
                 "accepted": accepted_status,
                 "duplicate": duplicate_status,
@@ -2710,6 +2803,14 @@ class PublicChecker:
                     len(events_duplicate),
                     len(events_conflict),
                 ],
+                "earlyAccepted": early_status,
+                "earlyFinalState": early_completed.get("state"),
+                "earlySignalState": (
+                    early_after_resume[0].get("status")
+                    if len(early_after_resume) == 1
+                    else None
+                ),
+                "crossProcessConflictCode": self.harness.error_code(global_conflict[1]),
             },
         )
 
@@ -2896,6 +2997,12 @@ class PublicChecker:
         self.harness.require(
             stopped, "Cannot stop workers for the deterministic claim scenario"
         )
+        up = self.harness.compose(
+            ["up", "-d", "--no-build", "--force-recreate", "worker-a", "worker-b"],
+            timeout=40,
+            failpoint="after_job_claim",
+        )
+        self.harness.require(up, "Cannot start both workers with after_job_claim")
         before_dispatch = self._view_count(
             "action_dispatches",
             f"module = {_sql_literal(self.module)} AND action = {_sql_literal(self.action)}",
@@ -2906,33 +3013,10 @@ class PublicChecker:
                 f"Concurrency process did not start: {self._command_view(start, body)}"
             )
         queued = self._jobs(process_id)
-        if len(queued) != 1 or queued[0].get("state") != "READY":
-            raise ContractError("Stopped workers did not leave exactly one READY job")
-        up = self.harness.compose(
-            ["up", "-d", "--no-build", "--force-recreate", "worker-a", "worker-b"],
-            timeout=40,
-            failpoint="after_job_claim",
-        )
-        self.harness.require(up, "Cannot start both workers with after_job_claim")
+        if len(queued) != 1 or queued[0].get("state") not in {"READY", "LEASED"}:
+            raise ContractError("The competing workers did not expose one logical job")
         winner, loser, winner_ack = self.harness.wait_single_winner(
             ("worker-a", "worker-b"), "after_job_claim"
-        )
-        claimed = self.harness.poll_rows(
-            "SELECT job_id::text, process_id::text, execution_id::text, state, lease_owner, "
-            "lease_version, attempt_count FROM autocheck.jobs "
-            f"WHERE process_id = {_sql_literal(process_id)}",
-            lambda rows: len(rows) == 1
-            and rows[0].get("state") == "LEASED"
-            and rows[0].get("lease_owner") == winner,
-            timeout=4,
-        )[0]
-        claimed_attempts = self._attempts(process_id)
-        initial_claim = (
-            claimed.get("attempt_count") == 1
-            and len(claimed_attempts) == 1
-            and claimed_attempts[0].get("attempt_number") == 1
-            and claimed_attempts[0].get("lease_version") == claimed.get("lease_version")
-            and claimed_attempts[0].get("status") == "RUNNING"
         )
         killed = self.harness.compose(["kill", winner], timeout=20)
         self.harness.require(killed, "Cannot kill the acknowledged claim winner")
@@ -2945,13 +3029,21 @@ class PublicChecker:
                 len(rows) == 1
                 and rows[0].get("state") == "LEASED"
                 and rows[0].get("lease_owner") == loser
-                and strictly_increasing_integer(
-                    rows[0].get("lease_version"), claimed.get("lease_version")
-                )
+                and rows[0].get("attempt_count") == 2
             ),
             timeout=8,
         )[0]
         reclaimed_attempts = self._attempts(process_id)
+        first_attempt = reclaimed_attempts[0] if reclaimed_attempts else {}
+        initial_lease = first_attempt.get("lease_version")
+        initial_claim = (
+            len(reclaimed_attempts) == 2
+            and first_attempt.get("attempt_number") == 1
+            and first_attempt.get("status") == "STALE"
+            and strictly_increasing_integer(
+                reclaimed.get("lease_version"), initial_lease
+            )
+        )
         reclaimed_ok = (
             reclaimed.get("attempt_count") == 2
             and len(reclaimed_attempts) == 2
@@ -2966,11 +3058,11 @@ class PublicChecker:
         stale = self.harness.cli(
             "flow",
             "test-finish",
-            str(claimed["job_id"]),
+            str(reclaimed["job_id"]),
             "--owner",
-            str(claimed["lease_owner"]),
+            winner,
             "--lease-version",
-            str(claimed["lease_version"]),
+            str(initial_lease),
             "--outcome",
             str(self.fixture["outcomes"]["signal"]),
             "--result",
@@ -3005,16 +3097,12 @@ class PublicChecker:
             and reclaimed_ok
             and winner_ack.get("instanceId") == winner
             and loser_ack.get("instanceId") == loser
-            and claimed.get("job_id")
-            == reclaimed.get("job_id")
-            == queued[0].get("job_id")
-            and claimed.get("execution_id")
-            == reclaimed.get("execution_id")
-            == queued[0].get("execution_id")
+            and reclaimed.get("job_id") == queued[0].get("job_id")
+            and reclaimed.get("execution_id") == queued[0].get("execution_id")
             and stale_ok
             and len(final_jobs) == 1
             and final_jobs[0].get("state") == "SUCCEEDED"
-            and final_jobs[0].get("job_id") == claimed.get("job_id")
+            and final_jobs[0].get("job_id") == reclaimed.get("job_id")
             and final_jobs[0].get("execution_id") == execution_id
             and strictly_increasing_integer(
                 final_jobs[0].get("lease_version"), reclaimed.get("lease_version")
@@ -3022,7 +3110,7 @@ class PublicChecker:
             and len(attempts) >= 3
             and len({row.get("attempt_id") for row in attempts}) == len(attempts)
             and all(
-                row.get("job_id") == claimed.get("job_id")
+                row.get("job_id") == reclaimed.get("job_id")
                 and row.get("execution_id") == execution_id
                 for row in attempts
             )
@@ -3040,11 +3128,11 @@ class PublicChecker:
                 "loser": loser,
                 "initialClaim": initial_claim,
                 "reclaimedAttempt": reclaimed_ok,
-                "sameJob": claimed.get("job_id") == reclaimed.get("job_id"),
-                "sameExecution": claimed.get("execution_id")
-                == reclaimed.get("execution_id"),
+                "sameJob": reclaimed.get("job_id") == queued[0].get("job_id"),
+                "sameExecution": reclaimed.get("execution_id")
+                == queued[0].get("execution_id"),
                 "leaseVersions": [
-                    claimed.get("lease_version"),
+                    initial_lease,
                     reclaimed.get("lease_version"),
                     final_jobs[0].get("lease_version") if final_jobs else None,
                 ],

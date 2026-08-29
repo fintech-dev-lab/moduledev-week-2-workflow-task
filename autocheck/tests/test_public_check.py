@@ -119,6 +119,36 @@ class ParsingTests(unittest.TestCase):
                         ("worker-a", "worker-b"), "after_job_claim"
                     )
 
+    def test_worker_addresses_are_read_from_docker_inspect(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            harness = public_check.ComposeHarness(
+                repo=root,
+                fixtures=root,
+                compose_file=root / "compose.yaml",
+                compose_wrapper=root / "wrapper.sh",
+                override_file=root / "override.yaml",
+                project="project",
+                gateway_port=8080,
+                sensitive=(),
+            )
+            container = public_check.CommandResult(
+                ("docker", "compose", "ps"), 0, "a" * 64 + "\n", ""
+            )
+            inspected = public_check.CommandResult(
+                ("docker", "inspect"), 0, "172.20.0.3\n\n", ""
+            )
+            with (
+                mock.patch.object(harness, "compose", return_value=container),
+                mock.patch.object(harness, "run", return_value=inspected) as run,
+            ):
+                succeeded, addresses = harness._service_addresses("worker-a")
+            self.assertTrue(succeeded)
+            self.assertEqual(addresses, {"172.20.0.3"})
+            self.assertEqual(
+                run.call_args.args[0][:3], ["docker", "inspect", "--format"]
+            )
+
 
 class QueryTests(unittest.TestCase):
     def test_stable_view_and_fixture_queries_are_allowed(self) -> None:
@@ -129,6 +159,10 @@ class QueryTests(unittest.TestCase):
         public_check.validate_read_only_query(
             "SELECT execution_id FROM probe_test.effect_test",
             ("probe_test", "effect_test"),
+        )
+        public_check.validate_read_only_query(
+            "SELECT has_table_privilege(r.oid, c.oid, 'INSERT') AS has_insert "
+            "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_roles r ON true"
         )
 
     def test_mutating_or_unpublished_queries_are_rejected(self) -> None:
@@ -306,6 +340,23 @@ class AdmissionSafetyTests(unittest.TestCase):
             }
             self.assertEqual(public_check._unsafe_compose_findings(config, repo), [])
 
+    def test_readme_sections_do_not_require_one_heading_hierarchy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            sections = "\n".join(
+                f"## {name.title()}\ncontent" for name in public_check.SOLUTION_HEADINGS
+            )
+            (repo / "README.md").write_text(
+                f"# Solution\n{sections}\ndocker compose up -d --build\n./check.sh\n",
+                encoding="utf-8",
+            )
+            checker = object.__new__(public_check.PublicChecker)
+            checker.repo = repo
+            with mock.patch.object(
+                checker, "_tracked_paths", return_value=["README.md", ".gitignore"]
+            ):
+                self.assertEqual(checker._admission_text_findings(), [])
+
     def test_host_escape_compose_options_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
@@ -375,6 +426,18 @@ class AdmissionSafetyTests(unittest.TestCase):
             }
             findings = public_check._unsafe_compose_findings(config, repo)
             self.assertIn("api: repository bind mount", findings)
+
+    def test_repository_config_and_secret_files_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            config = {
+                "services": {},
+                "configs": {"settings": {"file": str(repo / "settings.json")}},
+                "secrets": {"key": {"file": str(repo / "key.txt")}},
+            }
+            findings = public_check._unsafe_compose_findings(config, repo)
+            self.assertIn("configs.settings: repository file mount", findings)
+            self.assertIn("secrets.key: repository file mount", findings)
 
     def test_volume_driver_options_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -744,7 +807,7 @@ class StatePredicateTests(unittest.TestCase):
         rows[0]["is_active"] = True
         self.assertFalse(public_check.exact_active_version(rows, 2))
 
-    def test_exact_stable_view_schemas(self) -> None:
+    def test_required_stable_view_schemas_allow_order_and_extra_columns(self) -> None:
         rows = [
             {
                 "view_name": view,
@@ -757,7 +820,22 @@ class StatePredicateTests(unittest.TestCase):
             for ordinal, (column, data_type) in enumerate(columns, start=1)
         ]
         self.assertTrue(public_check.stable_view_schemas_match(rows))
-        rows[-1]["data_type"] = "text"
+        rows.reverse()
+        rows.append(
+            {
+                "view_name": "workflow_events",
+                "relation_kind": "v",
+                "ordinal": 99,
+                "column_name": "diagnostic_code",
+                "data_type": "text",
+            }
+        )
+        self.assertTrue(public_check.stable_view_schemas_match(rows))
+        required = next(row for row in rows if row["column_name"] == "event_id")
+        required["data_type"] = "text"
+        self.assertFalse(public_check.stable_view_schemas_match(rows))
+        required["data_type"] = "uuid"
+        rows = [row for row in rows if row["column_name"] != "event_id"]
         self.assertFalse(public_check.stable_view_schemas_match(rows))
 
     def test_action_dispatch_requires_trusted_principal_and_result(self) -> None:

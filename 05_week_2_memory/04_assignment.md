@@ -85,7 +85,7 @@ docker compose up -d --build
 
 Проверяющий контур не исполняет `course.sh` сдачи на host. Commands передаются entrypoint сервиса `cli`; trusted fixtures монтируются read-only. После `docker compose up` не требуется ручной DML, публикация встроенных maps или настройка credentials.
 
-Проверка отклоняет Compose-конструкции, которые выходят за границы отдельного project: external resources/providers/links, любые bind mounts, внешние logging drivers, Docker socket/API, host namespaces, privileged/device/capability/custom-runtime options, `include`/`extends`, внешние build contexts, дополнительные build tags/exporters, нестандартные resource drivers, любые volume `driver_opts` и network `driver_opts`/`ipam`. Явные `container_name`, image и имена локальных resources допустимы: trusted override заменяет их изолированными именами на время проверки.
+Проверка отклоняет Compose-конструкции, которые выходят за границы отдельного project: external resources/providers/links, любые bind mounts и file-backed `configs`/`secrets`, внешние logging drivers, Docker socket/API, host namespaces, privileged/device/capability/custom-runtime options, `include`/`extends`, внешние build contexts, дополнительные build tags/exporters, нестандартные resource drivers, любые volume `driver_opts` и network `driver_opts`/`ipam`. Явные `container_name`, image и имена локальных resources допустимы: trusted override заменяет их изолированными именами на время проверки. Bootstrap, migrations, встроенные manifests и maps копируются в images при сборке; проверочные fixtures монтирует только checker после cold build.
 
 Для машинной проверки C# Dockerfile API и worker должен запускать `dotnet`, DLL или self-contained binary с именем assembly проекта. Эффективный финальный stage, выбранный `build.target` или последним `FROM`, либо основан на `mcr.microsoft.com/dotnet/*`, либо получает запускаемый runtime artifact через `COPY --from` из такого build stage.
 
@@ -145,9 +145,21 @@ CLI-контракт:
 
 CLI пишет в stdout ровно один JSON document, diagnostics — только в stderr. Ошибка даёт non-zero exit code и error envelope с `meta.contractVersion = course-1`.
 
-`flow validate` не изменяет данные. Повторная идентичная публикация возвращает исходный result; попытка опубликовать другой contract под тем же `flow_name/version` возвращает conflict. `flow start` идемпотентен по паре `flow_name/business_key`: одинаковые data возвращают прежний process, изменённые data дают conflict даже после смены active version.
+Обязательные поля `result`:
 
-Локальная trusted command `flow signal` пишет `workflow_signal` без integration Inbox недели 3. Тот же `message-id` и body возвращают `duplicate`; тот же id с другим body — conflict.
+| Команда | Поля |
+|---|---|
+| `flow publish` | `resource="flow"`, `operation="published"`, `flowName`, `flowVersion` |
+| `flow activate` | `resource="flow"`, `operation="activated"`, `flowName`, `flowVersion` |
+| `flow start` | `resource="process"`, `operation="started"`, `processId`, `flowName`, `flowVersion`, `state` |
+| `flow get` | `resource="process"`, `processId`, `flowName`, `flowVersion`, `state`, `currentStepKey` |
+| `flow signal` | `resource="signal"`, `processId`, `messageId`, `signalType`, `status` со значением `accepted` или `duplicate` |
+
+List-команды возвращают `result.items`. `processId` сериализуется UUID-строкой. Action `workflow.get` принимает `{"processId":"..."}` с policy `workflow:read` и возвращает внутри `result` объект `process` и массивы `steps`, `jobs`, `attempts`.
+
+`flow validate` не изменяет данные. Повторная идентичная публикация возвращает исходный result; попытка опубликовать другой contract под тем же `flow_name/version` возвращает conflict. `flow start` идемпотентен по паре `flow_name/business_key`: одинаковые data возвращают прежний process, изменённые data дают conflict даже после смены active version. Без `--data` используется `{}`; отсутствие active version возвращает контролируемую ошибку. До возврата `flow start` process и первый waiting state или job уже зафиксированы.
+
+Локальная trusted command `flow signal` пишет `workflow_signal` без integration Inbox недели 3. `message-id` глобально уникален: `duplicate` возвращается только при совпадении process, type и body; любое расхождение даёт conflict без новой или изменённой signal-строки. Сигнал типа, объявленного в pinned map, можно принять до входа в соответствующий `wait_signal`: он хранится как `ACCEPTED` и атомарно применяется при входе в ожидание. Новый сигнал неизвестного pinned map типа отклоняется. Сигнал для уже завершённого process сохраняется, но process не двигает.
 
 ### Semantic validation
 
@@ -166,20 +178,23 @@ CLI пишет в stdout ровно один JSON document, diagnostics — то
 - корректность mapping, timeout и retry policy;
 - отсутствие неизвестных полей по JSON Schema `course-1`.
 
+Достижимость `manual` проверяется по графу, а не по наличию команды завершения недели 3.
+
 ### Mapping
 
 `input_mapping` имеет направление `target payload pointer -> source process data pointer`. Оба значения являются JSON Pointer по RFC 6901. `input_constants` задаёт исходный JSON object payload.
 
-Target pointers mappings не должны пересекаться между собой или с уже заданными constants. Отсутствующий source во время исполнения даёт non-retryable `workflow.mapping_missing`; action не вызывается. Сформированный payload валидируется request schema action до `api.invoke`.
+Target pointers mappings не должны пересекаться между собой или с уже заданными constants. Пересечением считаются равенство и отношение предок/потомок по сегментам JSON Pointer: `/a` пересекается с `/a/b`, но не с `/ab`. Отсутствующий source во время исполнения даёт non-retryable `workflow.mapping_missing`; action не вызывается. Сформированный payload валидируется request schema action до `api.invoke`.
 
 ### Retry
 
-- `max_attempts` включает первую попытку и находится в диапазоне 1–10;
+- `max_attempts` включает первое исполнение action и находится в диапазоне 1–10;
 - `delays_ms` содержит ровно `max_attempts - 1` значений;
-- после failed attempt N используется `delays_ms[N - 1]`;
+- после retryable failure N используется `delays_ms[N - 1]`;
 - повторяются error envelope с `retryable=true` и runtime timeout;
 - mapping error, unknown outcome и response contract violation не повторяются;
 - после исчерпания попыток job становится `DEAD`, step/process — `FAILED`, history получает `TaskFailed`;
+- claim с истёкшей lease остаётся attempt со статусом `STALE`, увеличивает `attempt_count`, но не расходует failure budget `max_attempts`; reclaim создаёт новую attempt;
 - jitter и бесконечные retries не требуются.
 
 ## Lease, attempts и fencing
@@ -197,7 +212,7 @@ Worker захватывает ready jobs короткой транзакцией
 
 При reclaim сохраняются `jobId` и `executionId`, создаётся новый `attemptId`, увеличивается `leaseVersion`. Finish принимается только при совпадении `jobId`, owner, `leaseVersion` и ожидаемого state. Stale finish не меняет job, process или предметные данные.
 
-Роль `workflow_worker` имеет `EXECUTE` только на фиксированные claim/invoke/finish/fail boundaries и не имеет прямого DML к предметным и workflow-таблицам. Имя роли является частью проверочного контракта.
+Роль `workflow_worker` имеет `EXECUTE` ровно на `workflow.claim_jobs`, `api.invoke`, `workflow.finish_job`, `workflow.fail_job` и не имеет прямого DML к предметным и workflow-таблицам. Для функций schemas `api` и `workflow` учитываются также права, унаследованные от `PUBLIC`, поэтому лишний default `EXECUTE` нужно отозвать. `workflow.claim_jobs` возвращает worker закреплённые action version, schemas, outcomes и policy, необходимые shared executor; отдельное чтение каталога роли не требуется. Имя роли является частью проверочного контракта.
 
 ## Транзакционные границы
 
@@ -244,6 +259,8 @@ COURSE_FAILPOINT=after_action_before_finish
 
 Затем worker блокируется до принудительной остановки. Checker ждёт acknowledgement, а не использует случайный `sleep`.
 
+Checker включает test profile и передаёт одно значение `COURSE_FAILPOINT` обоим worker. Победителя определяет атомарный claim, а не отдельная переменная конкретного container.
+
 Для fencing probe test adapter предоставляет command:
 
 ```text
@@ -260,13 +277,25 @@ Test profile: lease 2 секунды, poll interval не более 100 ms, об
 
 ## Диагностика и evidence
 
-Обязательны:
+Обязательны compact `flow get`, action `workflow.get`, server-side IDs и safe error codes без stack trace, credentials и полного payload. Image digest worker до и после hidden publication должен совпасть.
 
-- compact `flow get` result из contract reference;
-- action `workflow.get`, возвращающий process, steps, jobs и attempts для диагностики;
-- read-only views `autocheck.flow_versions`, `processes`, `steps`, `jobs`, `attempts`, `signals`, `workflow_events`;
-- server-side IDs и safe error codes без stack trace, credentials и полного payload;
-- image digest worker до и после hidden publication должен совпасть.
+Read-only schema `autocheck` публикует views. Указанные колонки и типы обязательны, но их порядок и дополнительные диагностические колонки не являются контрактом. Все relation имеют тип обычного view, не materialized view. `timestamptz` означает `timestamp with time zone`; неуказанные идентификаторы имеют тип `uuid`.
+
+| View | Обязательные колонки |
+|---|---|
+| `action_definitions` | `module text`, `action text`, `version integer`, `http_method text`, `target_schema text`, `target_function text`, `outcomes jsonb`, `enabled boolean`, `is_default boolean` |
+| `action_dispatches` | `correlation_id`, `request_id text`, `module text`, `action text`, `version integer`, `principal text`, `payload_hash text`, `status text`, `outcome text`, `occurred_at timestamptz` |
+| `flow_versions` | `flow_name text`, `flow_version integer`, `status text`, `is_active boolean`, `published_at timestamptz` |
+| `processes` | `process_id`, `business_key text`, `flow_name text`, `flow_version integer`, `state text`, `current_step_key text`, `created_at timestamptz`, `updated_at timestamptz` |
+| `steps` | `step_instance_id`, `process_id`, `step_key text`, `step_type text`, `state text`, `outcome text`, `entered_at timestamptz`, `completed_at timestamptz` |
+| `jobs` | `job_id`, `process_id`, `step_instance_id`, `execution_id`, `state text`, `lease_owner text`, `lease_version bigint`, `lease_until timestamptz`, `attempt_count integer`, `next_attempt_at timestamptz` |
+| `attempts` | `attempt_id`, `job_id`, `execution_id`, `lease_version bigint`, `attempt_number integer`, `status text`, `outcome text`, `error_code text`, `started_at timestamptz`, `finished_at timestamptz` |
+| `signals` | `message_id text`, `process_id`, `signal_type text`, `body_hash text`, `status text`, `received_at timestamptz` |
+| `workflow_events` | `event_id`, `process_id`, `step_instance_id`, `event_type text`, `occurred_at timestamptz` |
+
+Enum-подобные state/status/type используют uppercase ASCII: `flow_versions.status=PUBLISHED`; process states перечислены выше; `steps.step_type` — `AUTOMATIC`, `WAIT_SIGNAL`, `MANUAL`, `END`; step states — `PENDING`, `READY`, `RUNNING`, `WAITING`, `COMPLETED`, `FAILED`; job states перечислены выше; attempt statuses — `RUNNING`, `SUCCEEDED`, `FAILED`, `STALE`; signal statuses — `ACCEPTED`, `APPLIED`. `workflow_events.event_type` является именем доменного события в PascalCase; при исчерпании retry обязателен `TaskFailed`.
+
+Workflow-вызов action сохраняет `action_dispatches.request_id=executionId` и `principal=workflow-worker`. Строка успешного dispatch фиксируется в общей transaction action/finish; rollback не оставляет dispatch. Из error codes недели 2 фиксированы `workflow.mapping_missing` и `workflow.lease_stale`; остальные используют safe lowercase dotted identifiers и не проверяются по конкретному имени, кроме семантики conflict.
 
 Authoritative checker использует CLI и views, а не физические таблицы и имена C# classes.
 

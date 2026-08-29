@@ -34,11 +34,23 @@ Active version выбирается для новых экземпляров. У
 
 ## Какие ошибки повторяются?
 
-Error envelope с `retryable=true` и runtime timeout. Mapping error, unknown outcome и response contract violation non-retryable. `max_attempts` включает первую attempt, а `delays_ms` содержит ровно `max_attempts - 1` значений.
+Error envelope с `retryable=true` и runtime timeout. Mapping error, unknown outcome и response contract violation non-retryable. `max_attempts` включает первое исполнение action, а `delays_ms` содержит ровно `max_attempts - 1` значений.
+
+Истёкшая lease создаёт `STALE` attempt и учитывается в `attempt_count`, но не расходует failure budget `max_attempts`.
 
 ## В какую сторону работает input_mapping?
 
 Ключ — target JSON Pointer в payload action, значение — source JSON Pointer в process data. Missing source даёт `workflow.mapping_missing`, action не вызывается.
+
+Пересечение target pointers определяется по сегментам: `/a` пересекается с `/a/b`, но не с `/ab`.
+
+## Что происходит с ранним сигналом?
+
+`message-id` глобально уникален. Сигнал типа из pinned map принимается до входа в `wait_signal`, хранится как `ACCEPTED` и атомарно применяется при входе в ожидание. Повтор с тем же process/type/body даёт `duplicate`, любое расхождение — conflict без изменения сохранённой строки.
+
+## Какие функции может выполнять workflow_worker?
+
+Ровно `workflow.claim_jobs`, `api.invoke`, `workflow.finish_job`, `workflow.fail_job`. Claim возвращает закреплённый action contract, поэтому отдельные catalog-функции роли не нужны. Права `PUBLIC` на остальные функции schemas `api` и `workflow` должны быть отозваны.
 
 ## Почему task повторяет required_policy action?
 
