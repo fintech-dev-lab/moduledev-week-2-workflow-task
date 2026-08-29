@@ -63,6 +63,36 @@ class FixtureTests(unittest.TestCase):
 
 
 class ParsingTests(unittest.TestCase):
+    def test_image_id_uses_compose_reference_before_containers_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            harness = public_check.ComposeHarness(
+                repo=root,
+                fixtures=root,
+                compose_file=root / "compose.yaml",
+                compose_wrapper=root / "safe_compose.sh",
+                override_file=root / "override.yaml",
+                project="public-check-unit",
+                gateway_port=8080,
+                sensitive=(),
+            )
+            config = public_check.CommandResult(
+                ("compose", "config"),
+                0,
+                json.dumps({"services": {"api": {"build": {"context": "."}}}}),
+                "",
+            )
+            digest = "a" * 64
+            inspected = public_check.CommandResult(
+                ("docker", "image", "inspect"), 0, f"sha256:{digest}\n", ""
+            )
+            with (
+                mock.patch.object(harness, "compose", return_value=config),
+                mock.patch.object(harness, "run", return_value=inspected) as run,
+            ):
+                self.assertEqual(harness.image_id("api"), f"sha256:{digest}")
+        self.assertEqual(run.call_args.args[0][-1], "public-check-unit-api")
+
     def test_structured_failpoint_parsing(self) -> None:
         logs = "\n".join(
             (

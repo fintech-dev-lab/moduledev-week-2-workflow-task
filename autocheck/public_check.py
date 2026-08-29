@@ -1327,7 +1327,7 @@ class ComposeHarness:
         raise ContractError(message + suffix)
 
     def cli(
-        self, *arguments: str, timeout: float = 30, input_text: str | None = None
+        self, *arguments: str, timeout: float = 120, input_text: str | None = None
     ) -> tuple[CommandResult, dict[str, Any] | None]:
         result = self.compose(
             [
@@ -1397,6 +1397,8 @@ class ComposeHarness:
                 "-X",
                 "-v",
                 "ON_ERROR_STOP=1",
+                "-U",
+                "postgres",
                 "-d",
                 "course",
                 "-At",
@@ -1491,11 +1493,11 @@ class ComposeHarness:
         if addresses:
             literals = ", ".join(_sql_literal(address) for address in addresses)
             sessions = self.psql_rows(
-                "SELECT client_addr::text AS client_addr, usename AS session_role, "
+                "SELECT host(client_addr) AS client_addr, usename AS session_role, "
                 "count(*)::integer AS session_count FROM pg_catalog.pg_stat_activity "
                 "WHERE datname = current_database() AND client_addr IS NOT NULL "
-                f"AND client_addr::text IN ({literals}) "
-                "GROUP BY client_addr, usename ORDER BY client_addr, usename"
+                f"AND host(client_addr) IN ({literals}) "
+                "GROUP BY host(client_addr), usename ORDER BY host(client_addr), usename"
             )
 
         physical_tables = self.psql_rows(
@@ -1598,7 +1600,31 @@ class ComposeHarness:
         )
 
     def image_id(self, service: str) -> str:
-        result = self.compose(["images", "-q", service], timeout=30)
+        config = self.compose(
+            ["config", "--format", "json", "--no-env-resolution"], timeout=30
+        )
+        self.require(config, f"Cannot resolve the {service} image reference")
+        try:
+            definition = json.loads(config.stdout)["services"][service]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ContractError(
+                f"Compose did not return an image reference for {service}"
+            ) from error
+        reference = definition.get("image") if isinstance(definition, dict) else None
+        if (
+            reference is None
+            and isinstance(definition, dict)
+            and definition.get("build")
+        ):
+            reference = f"{self.project}-{service}"
+        if not isinstance(reference, str) or not reference or "\n" in reference:
+            raise ContractError(
+                f"Compose returned an invalid image reference for {service}"
+            )
+        result = self.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", reference],
+            timeout=30,
+        )
         self.require(result, f"Cannot inspect the {service} image ID")
         return _normalize_image_id(result.stdout)
 
@@ -2187,7 +2213,7 @@ class PublicChecker:
                 "--force-recreate",
                 *sorted(REQUIRED_SERVICES),
             ],
-            timeout=120,
+            timeout=600,
         )
         if not up.ok and self.harness._environment_error(up):
             raise EnvironmentFailure("Docker transport failed while starting the stack")
@@ -2381,10 +2407,10 @@ class PublicChecker:
     def publication(self) -> None:
         commands = [
             self.harness.cli(
-                "migration", "apply", "/autocheck/input/migrations", timeout=40
+                "migration", "apply", "/autocheck/input/migrations", timeout=120
             ),
             self.harness.cli(
-                "migration", "apply", "/autocheck/input/migrations", timeout=40
+                "migration", "apply", "/autocheck/input/migrations", timeout=120
             ),
             self.harness.cli(
                 "action", "validate", f"/autocheck/input/{self.files['actionManifest']}"
