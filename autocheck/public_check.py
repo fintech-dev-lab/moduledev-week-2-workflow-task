@@ -1382,31 +1382,32 @@ class ComposeHarness:
         *,
         allowed_fixture_relation: tuple[str, str] | None = None,
         timeout: float = 10,
+        container_id: str | None = None,
     ) -> list[dict[str, Any]]:
         validate_read_only_query(query, allowed_fixture_relation)
         wrapped = (
             "SELECT COALESCE(jsonb_agg(to_jsonb(q)), '[]'::jsonb)::text "
             f"FROM ({query}) AS q"
         )
-        result = self.compose(
-            [
-                "exec",
-                "-T",
-                "postgres",
-                "psql",
-                "-X",
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-U",
-                "postgres",
-                "-d",
-                "course",
-                "-At",
-                "-c",
-                wrapped,
-            ],
-            timeout=timeout,
-        )
+        psql = [
+            "psql",
+            "-X",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            "postgres",
+            "-d",
+            "course",
+            "-At",
+            "-c",
+            wrapped,
+        ]
+        if container_id is None:
+            result = self.compose(["exec", "-T", "postgres", *psql], timeout=timeout)
+        else:
+            if re.fullmatch(r"[a-f0-9]{12,64}", container_id) is None:
+                raise ValueError("PostgreSQL container id is invalid")
+            result = self.run(["docker", "exec", container_id, *psql], timeout=timeout)
         if not result.ok:
             if self._environment_error(result):
                 raise EnvironmentFailure(
@@ -1427,8 +1428,10 @@ class ComposeHarness:
             )
         return value
 
-    def psql_rows(self, query: str, timeout: float = 10) -> list[dict[str, Any]]:
-        return self._psql_rows(query, timeout=timeout)
+    def psql_rows(
+        self, query: str, timeout: float = 10, *, container_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        return self._psql_rows(query, timeout=timeout, container_id=container_id)
 
     @staticmethod
     def _container_addresses(result: CommandResult) -> set[str]:
@@ -1705,12 +1708,15 @@ class ComposeHarness:
         *,
         timeout: float = 8,
         interval: float = 0.05,
+        container_id: str | None = None,
     ) -> list[dict[str, Any]]:
         if interval <= 0 or interval > 0.1:
             raise ValueError("State polling interval must not exceed 100 ms")
         deadline = time.monotonic() + timeout
         while True:
-            rows = self.psql_rows(query, timeout=min(10, timeout))
+            rows = self.psql_rows(
+                query, timeout=min(10, timeout), container_id=container_id
+            )
             if predicate(rows):
                 return rows
             now = time.monotonic()
@@ -1721,15 +1727,23 @@ class ComposeHarness:
             time.sleep(min(interval, max(0.0, deadline - now)))
 
     def wait_failpoint(
-        self, service: str, name: str, *, timeout: float = 8, interval: float = 0.05
+        self,
+        service: str,
+        name: str,
+        *,
+        timeout: float = 8,
+        interval: float = 0.05,
+        container_id: str | None = None,
     ) -> dict[str, str]:
         if interval <= 0 or interval > 0.1:
             raise ValueError("Failpoint polling interval must not exceed 100 ms")
         deadline = time.monotonic() + timeout
         successful_reads = 0
         while True:
-            logs = self.compose(
-                ["logs", "--no-color", service], timeout=min(10, timeout)
+            logs = (
+                self.compose(["logs", "--no-color", service], timeout=min(10, timeout))
+                if container_id is None
+                else self.run(["docker", "logs", container_id], timeout=min(1, timeout))
             )
             if logs.ok:
                 successful_reads += 1
@@ -1762,7 +1776,6 @@ class ComposeHarness:
         services: Sequence[str],
         name: str,
         *,
-        container_ids: dict[str, str] | None = None,
         timeout: float = 8,
         interval: float = 0.05,
         stability: float = 0.2,
@@ -1775,27 +1788,9 @@ class ComposeHarness:
         observed_at: float | None = None
         while True:
             remaining = max(0.1, deadline - time.monotonic())
-            if container_ids is None:
-                logs = self.compose(
-                    ["logs", "--no-color", *services], timeout=min(remaining, 1.0)
-                )
-            else:
-                invalid_ids = set(services) - set(container_ids)
-                if invalid_ids:
-                    raise ValueError("Every contender must have a container id")
-                log_results = [
-                    self.run(
-                        ["docker", "logs", container_ids[service]],
-                        timeout=min(remaining, 1.0),
-                    )
-                    for service in services
-                ]
-                logs = CommandResult(
-                    ("docker", "logs", "<worker-containers>"),
-                    0 if all(result.ok for result in log_results) else 1,
-                    "\n".join(result.stdout for result in log_results),
-                    "\n".join(result.stderr for result in log_results),
-                )
+            logs = self.compose(
+                ["logs", "--no-color", *services], timeout=min(remaining, 1.0)
+            )
             acknowledgements: dict[str, dict[str, str]] = {}
             if logs.ok:
                 successful_reads += 1
@@ -3081,16 +3076,32 @@ class PublicChecker:
         container_ids = self.harness.service_container_ids(
             ("worker-a", "worker-b"), include_stopped=True
         )
+        postgres_id = self.harness.service_container_ids(("postgres",))["postgres"]
         started = self.harness.run(
             ["docker", "start", container_ids["worker-a"], container_ids["worker-b"]],
             timeout=20,
             failpoint="after_job_claim",
         )
         self.harness.require(started, "Cannot start both workers with after_job_claim")
-        winner, loser, winner_ack = self.harness.wait_single_winner(
-            ("worker-a", "worker-b"),
+        initial_claim_row = self.harness.poll_rows(
+            "SELECT job_id::text, process_id::text, execution_id::text, state, "
+            "lease_owner, lease_version, attempt_count FROM autocheck.jobs "
+            f"WHERE process_id = {_sql_literal(process_id)}",
+            lambda rows: (
+                len(rows) == 1
+                and rows[0].get("state") == "LEASED"
+                and rows[0].get("lease_owner") in {"worker-a", "worker-b"}
+                and rows[0].get("attempt_count") == 1
+            ),
+            timeout=8,
+            container_id=postgres_id,
+        )[0]
+        winner = str(initial_claim_row["lease_owner"])
+        loser = "worker-b" if winner == "worker-a" else "worker-a"
+        winner_ack = self.harness.wait_failpoint(
+            winner,
             "after_job_claim",
-            container_ids=container_ids,
+            container_id=container_ids[winner],
         )
         killed = self.harness.run(["docker", "kill", container_ids[winner]], timeout=20)
         self.harness.require(killed, "Cannot kill the acknowledged claim winner")
