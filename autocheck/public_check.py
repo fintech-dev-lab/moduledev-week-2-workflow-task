@@ -1478,6 +1478,22 @@ class ComposeHarness:
         addresses = self._container_addresses(inspected)
         return inspected.ok and bool(addresses), addresses
 
+    def service_container_ids(
+        self, services: Sequence[str], *, include_stopped: bool = False
+    ) -> dict[str, str]:
+        arguments = ["ps", "-aq" if include_stopped else "-q"]
+        result: dict[str, str] = {}
+        for service in services:
+            containers = self.compose([*arguments, service], timeout=10)
+            self.require(containers, f"Cannot resolve the {service} container")
+            values = [
+                item.strip() for item in containers.stdout.splitlines() if item.strip()
+            ]
+            if len(values) != 1 or re.fullmatch(r"[a-f0-9]{12,64}", values[0]) is None:
+                raise ContractError(f"Expected exactly one {service} container")
+            result[service] = values[0]
+        return result
+
     def worker_database_security(self) -> dict[str, Any]:
         service_addresses: dict[str, set[str]] = {}
         address_probes: dict[str, bool] = {}
@@ -1746,6 +1762,7 @@ class ComposeHarness:
         services: Sequence[str],
         name: str,
         *,
+        container_ids: dict[str, str] | None = None,
         timeout: float = 8,
         interval: float = 0.05,
         stability: float = 0.2,
@@ -1758,9 +1775,27 @@ class ComposeHarness:
         observed_at: float | None = None
         while True:
             remaining = max(0.1, deadline - time.monotonic())
-            logs = self.compose(
-                ["logs", "--no-color", *services], timeout=min(remaining, 1.0)
-            )
+            if container_ids is None:
+                logs = self.compose(
+                    ["logs", "--no-color", *services], timeout=min(remaining, 1.0)
+                )
+            else:
+                invalid_ids = set(services) - set(container_ids)
+                if invalid_ids:
+                    raise ValueError("Every contender must have a container id")
+                log_results = [
+                    self.run(
+                        ["docker", "logs", container_ids[service]],
+                        timeout=min(remaining, 1.0),
+                    )
+                    for service in services
+                ]
+                logs = CommandResult(
+                    ("docker", "logs", "<worker-containers>"),
+                    0 if all(result.ok for result in log_results) else 1,
+                    "\n".join(result.stdout for result in log_results),
+                    "\n".join(result.stderr for result in log_results),
+                )
             acknowledgements: dict[str, dict[str, str]] = {}
             if logs.ok:
                 successful_reads += 1
@@ -3023,12 +3058,6 @@ class PublicChecker:
         self.harness.require(
             stopped, "Cannot stop workers for the deterministic claim scenario"
         )
-        up = self.harness.compose(
-            ["up", "-d", "--no-build", "--force-recreate", "worker-a", "worker-b"],
-            timeout=40,
-            failpoint="after_job_claim",
-        )
-        self.harness.require(up, "Cannot start both workers with after_job_claim")
         before_dispatch = self._view_count(
             "action_dispatches",
             f"module = {_sql_literal(self.module)} AND action = {_sql_literal(self.action)}",
@@ -3039,12 +3068,31 @@ class PublicChecker:
                 f"Concurrency process did not start: {self._command_view(start, body)}"
             )
         queued = self._jobs(process_id)
-        if len(queued) != 1 or queued[0].get("state") not in {"READY", "LEASED"}:
-            raise ContractError("The competing workers did not expose one logical job")
-        winner, loser, winner_ack = self.harness.wait_single_winner(
-            ("worker-a", "worker-b"), "after_job_claim"
+        if len(queued) != 1 or queued[0].get("state") != "READY":
+            raise ContractError(
+                "The stopped workers did not leave one logical READY job"
+            )
+        created = self.harness.compose(
+            ["create", "--no-build", "--force-recreate", "worker-a", "worker-b"],
+            timeout=40,
+            failpoint="after_job_claim",
         )
-        killed = self.harness.compose(["kill", winner], timeout=20)
+        self.harness.require(created, "Cannot create both workers with after_job_claim")
+        container_ids = self.harness.service_container_ids(
+            ("worker-a", "worker-b"), include_stopped=True
+        )
+        started = self.harness.run(
+            ["docker", "start", container_ids["worker-a"], container_ids["worker-b"]],
+            timeout=20,
+            failpoint="after_job_claim",
+        )
+        self.harness.require(started, "Cannot start both workers with after_job_claim")
+        winner, loser, winner_ack = self.harness.wait_single_winner(
+            ("worker-a", "worker-b"),
+            "after_job_claim",
+            container_ids=container_ids,
+        )
+        killed = self.harness.run(["docker", "kill", container_ids[winner]], timeout=20)
         self.harness.require(killed, "Cannot kill the acknowledged claim winner")
         loser_ack = self.harness.wait_failpoint(loser, "after_job_claim", timeout=8)
         reclaimed = self.harness.poll_rows(
